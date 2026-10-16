@@ -1,0 +1,4 @@
+# Written by pnpm. esbuild's postinstall links the native binary that tsx runs on,
+# so allow it rather than leaving every install with an unresolved prompt.
+allowBuilds:
+  esbuild: true

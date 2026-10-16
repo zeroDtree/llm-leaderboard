@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>LLM Leaderboard</title>
+<style>
+  /* Palette roles. Dark is a selected set of steps for the dark surface, not a flip;
+     the values live here so the chart body is written against roles, not hex. */
+  :root {
+    --surface-1: #fcfcfb;
+    --page:      #f9f9f7;
+    --ink-1:     #0b0b0b;
+    --ink-2:     #52514e;
+    --ink-muted: #898781;
+    --grid:      #e1e0d9;
+    --axis:      #c3c2b7;
+    --border:    rgba(11, 11, 11, 0.10);
+    --series-1:  #2a78d6;   /* in filter  */
+    --series-2:  #eb6834;   /* frontier   */
+    --context:   #898781;   /* excluded   */
+    --danger:    #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      --surface-1: #1a1a19;
+      --page:      #0d0d0d;
+      --ink-1:     #f0efec;
+      --ink-2:     #c3c2b7;
+      --ink-muted: #898781;
+      --grid:      #2c2c2a;
+      --axis:      #383835;
+      --border:    rgba(255, 255, 255, 0.10);
+      --series-1:  #3987e5;
+      --series-2:  #d95926;
+      --danger:    #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    --surface-1: #1a1a19;
+    --page:      #0d0d0d;
+    --ink-1:     #f0efec;
+    --ink-2:     #c3c2b7;
+    --ink-muted: #898781;
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+    --border:    rgba(255, 255, 255, 0.10);
+    --series-1:  #3987e5;
+    --series-2:  #d95926;
+    --danger:    #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink-1);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 24px 20px 64px; }
+
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .meta { color: var(--ink-muted); font-size: 12.5px; }
+  .meta a { color: var(--ink-2); }
+  .spacer { flex: 1; }
+
+  button {
+    font: inherit; font-size: 13px;
+    color: var(--ink-2); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 5px 11px; cursor: pointer;
+  }
+  button:hover { color: var(--ink-1); border-color: var(--axis); }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  /* One filter row, above everything it scopes. */
+  .filters { margin: 18px 0 14px; }
+  .filterrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #filter {
+    flex: 1; min-width: 280px;
+    font: 13.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--ink-1); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 8px 11px;
+  }
+  #filter:focus { outline: 2px solid var(--series-1); outline-offset: -1px; border-color: transparent; }
+  .count { font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 13px; white-space: nowrap; }
+  .error { color: var(--danger); font-size: 12.5px; margin-top: 7px; font-family: ui-monospace, Menlo, monospace; white-space: pre; }
+  .hint { color: var(--ink-muted); font-size: 12.5px; margin-top: 7px; }
+  .hint code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+  }
+  .card > h2 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 2px; }
+  .card > .sub { font-size: 12.5px; color: var(--ink-muted); margin-bottom: 10px; }
+
+  /* Legend — always present for >= 2 series. */
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); margin-bottom: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .key-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .key-line { width: 14px; height: 2px; border-radius: 1px; }
+
+  svg { display: block; width: 100%; touch-action: none; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axisline { stroke: var(--axis); stroke-width: 1; }
+  .tick { fill: var(--ink-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .dlabel { fill: var(--ink-2); font-size: 11px; }
+
+  .dot { stroke: var(--surface-1); stroke-width: 2; }   /* 2px surface ring */
+  .dot-context { fill: var(--context); opacity: 0.32; stroke: none; }
+  .dot-focus { fill: var(--series-1); }
+  .frontier { fill: none; stroke: var(--series-2); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+
+  #tip {
+    position: fixed; z-index: 10; pointer-events: none; display: none;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; min-width: 190px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.13);
+  }
+  #tip .name { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+  #tip .by { color: var(--ink-muted); font-size: 12px; margin-bottom: 7px; }
+  #tip dl { margin: 0; display: grid; grid-template-columns: auto auto; gap: 2px 14px; font-size: 12.5px; }
+  #tip dt { color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  #tip dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+  .tablehead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .scroll { overflow-x: auto; margin: 0 -18px; padding: 0 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--surface-1); color: var(--ink-2); font-weight: 600; cursor: pointer; user-select: none; z-index: 1; }
+  th:hover { color: var(--ink-1); }
+  th .arrow { color: var(--ink-muted); font-size: 10px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  th.num { text-align: right; }
+  tbody tr:hover { background: color-mix(in srgb, var(--series-1) 7%, transparent); }
+  td.model { font-weight: 500; }
+  .swatch { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 7px; vertical-align: 1px; }
+  .muted { color: var(--ink-muted); }
+
+  details.cols { font-size: 12.5px; color: var(--ink-2); }
+  details.cols summary { cursor: pointer; }
+  .colgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 3px 14px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+  .colgrid label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .colgrid .cov { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LLM Leaderboard</h1>
+    <div class="meta" id="meta">loading…</div>
+    <div class="spacer"></div>
+    <button id="refresh">Refresh</button>
+    <button id="theme">Theme</button>
+  </header>
+
+  <div class="filters">
+    <div class="filterrow">
+      <input id="filter" type="text" spellcheck="false" autocomplete="off"
+             placeholder="price &lt; 1 and intelligence &gt; 40">
+      <span class="count" id="count"></span>
+    </div>
+    <div class="error" id="error"></div>
+    <div class="hint" id="hint">
+      e.g. <code>price &lt; 1</code> · <code>openWeights and not deprecated</code> ·
+      <code>creator in (Anthropic, OpenAI)</code> · <code>name ~ claude</code>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Price vs intelligence</h2>
+    <div class="sub">Blended 3:1 input:output price, log scale. Points below show what the filter keeps.</div>
+    <div class="legend">
+      <span><i class="key-dot" style="background:var(--series-1)"></i> In filter</span>
+      <span><i class="key-dot" style="background:var(--context);opacity:.5"></i> Excluded</span>
+      <span><i class="key-line" style="background:var(--series-2)"></i> Best value frontier</span>
+    </div>
+    <svg id="scatter" role="img" aria-label="Scatter plot of price against intelligence index"></svg>
+  </div>
+
+  <div class="card">
+    <div class="tablehead">
+      <h2>Models</h2>
+      <div class="spacer"></div>
+      <details class="cols">
+        <summary>Columns</summary>
+        <div class="colgrid" id="colgrid"></div>
+      </details>
+    </div>
+    <div class="scroll"><table id="table"></table></div>
+  </div>
+</div>
+
+<div id="tip"></div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id)
+
+/** Fields whose value is entirely absent in the current result are hidden. */
+const DEFAULT_COLUMNS = [
+  'name', 'modelCreatorName', 'isReasoning', 'intelligenceIndex', 'price',
+  'price1mInputTokens', 'price1mOutputTokens', 'medianOutputTokensPerSecond',
+  'medianTimeToFirstTokenSeconds', 'contextWindowTokens', 'releaseDate',
+]
+const ROW_LIMIT = 500
+
+const state = { filter: '', sort: 'intelligence', order: 'desc', columns: [...DEFAULT_COLUMNS], fields: [], all: [], models: [], matched: 0, total: 0 }
+
+const fieldByName = (name) => state.fields.find((f) => f.name === name)
+
+/** Sub-cent prices keep two significant figures; cents would print "$0.00" and read as free. */
+function formatPrice(value) {
+  if (value === 0) return '$0'
+  if (value < 0.01) return '$' + Number(value.toPrecision(2))
+  return '$' + value.toFixed(2)
+}
+
+function format(value, format) {
+  if (value === null || value === undefined || value === '') return '—'
+  switch (format) {
+    case 'percent': return (value * 100).toFixed(1) + '%'
+    case 'price':   return formatPrice(Number(value))
+    case 'score':   return Number(value).toFixed(1)
+    case 'number':  return Number(value).toFixed(1)
+    case 'int':     return Number(value).toLocaleString('en-US')
+    case 'bool':    return value ? 'yes' : 'no'
+    default:        return String(value)
+  }
+}
+
+const SVG_TAGS = new Set(['g', 'line', 'path', 'circle', 'text'])
+
+/**
+ * Build an element. Tags in {@link SVG_TAGS} need the SVG namespace — plain
+ * `createElement` yields unknown HTML elements that parse into the DOM but get no
+ * layout box, so they silently paint nothing.
+ *
+ * Names go in via textContent; model and creator names are untrusted data. Everything
+ * else uses setAttribute, which is also the only way to set `class` on an SVG node.
+ */
+function el(tag, props = {}, children = []) {
+  const node = SVG_TAGS.has(tag)
+    ? document.createElementNS(NS, tag)
+    : document.createElement(tag)
+  for (const [key, value] of Object.entries(props)) {
+    if (key === 'text') node.textContent = value
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value)
+    else node.setAttribute(key, value)
+  }
+  for (const child of children) node.append(child)
+  return node
+}
+
+// ---------------------------------------------------------------- data
+/** The unfiltered leaderboard, fetched once — it is the scatter's context layer. */
+async function loadAll() {
+  const payload = await (await fetch('/api/models')).json()
+  state.all = payload.models
+}
+
+async function load() {
+  const params = new URLSearchParams({ sort: state.sort, order: state.order })
+  if (state.filter.trim()) params.set('filter', state.filter)
+  let payload
+  try {
+    const response = await fetch('/api/models?' + params)
+    payload = await response.json()
+    if (!response.ok) return showError(payload.error ?? 'request failed', payload.pos)
+  } catch {
+    return showError('cannot reach the local server', null)
+  }
+  showError(null)
+  state.models = payload.models
+  state.matched = payload.matched
+  state.total = payload.total
+  $('meta').replaceChildren(
+    document.createTextNode(`${payload.total} models · ${String(payload.fetchedAt).slice(0, 10)} · `),
+    el('a', { href: 'https://artificialanalysis.ai/leaderboards/models', target: '_blank', rel: 'noopener', text: 'Artificial Analysis' }),
+  )
+  $('count').textContent = `${payload.matched} of ${payload.total} models`
+  try {
+    renderScatter()
+    renderTable()
+  } catch (error) {
+    // Surface a render failure instead of leaving a silently blank chart or table.
+    showError(`render failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function showError(message, pos) {
+  const box = $('error')
+  if (!message) { box.textContent = ''; return }
+  const caret = typeof pos === 'number' ? '\n' + ' '.repeat(pos) + '^' : ''
+  box.textContent = message + caret
+}
+
+// ---------------------------------------------------------------- scatter
+const M = { top: 26, right: 22, bottom: 42, left: 46 }
+const NS = 'http://www.w3.org/2000/svg'
+
+/** Round tick positions to 1/2/2.5/5 × 10^n, capped so the axis never crowds. */
+function niceTicks(min, max) {
+  const span = max - min
+  const magnitude = 10 ** Math.floor(Math.log10(span / 5))
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => span / s <= 8) ?? magnitude * 10
+  const ticks = []
+  for (let value = Math.ceil(min / step) * step; value <= max + 1e-9; value += step) {
+    ticks.push(Number(value.toFixed(6)))
+  }
+  return ticks
+}
+
+function renderScatter() {
+  const svg = $('scatter')
+  svg.replaceChildren()
+  const width = svg.parentElement.clientWidth - 36
+  const height = 380
+
+  // The scatter always plots the whole leaderboard and only recolours what the filter
+  // keeps: the axes then hold still while you type, and you can see what was excluded.
+  const priced = (state.all ?? state.models).filter((m) => Number(m.price) > 0 && m.intelligenceIndex != null)
+  const focusSlugs = new Set(state.models.map((m) => m.slug))
+  if (priced.length < 2) {
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`)
+    svg.setAttribute('height', height)
+    svg.append(el('text', { class: 'tick', x: width / 2, y: height / 2, 'text-anchor': 'middle', text: 'not enough priced models to plot' }))
+    return
+  }
+
+  const xs = priced.map((m) => Math.log10(Number(m.price)))
+  const ys = priced.map((m) => m.intelligenceIndex)
+  const pad = (lo, hi) => { const d = (hi - lo) * 0.08 || 1; return [lo - d, hi + d] }
+  const [x0, x1] = pad(Math.min(...xs), Math.max(...xs))
+  const [y0, y1] = pad(Math.min(...ys), Math.max(...ys))
+
+  const px = (x) => M.left + ((x - x0) / (x1 - x0)) * (width - M.left - M.right)
+  const py = (y) => height - M.bottom - ((y - y0) / (y1 - y0)) * (height - M.top - M.bottom)
+
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`)
+  svg.setAttribute('height', height)
+
+  const dec = (v) => '$' + (v < 1 ? v.toFixed(2).replace(/0$/, '') : v >= 1000 ? (v / 1000) + 'K' : String(v))
+
+  // Gridlines and axes: solid hairlines, one step off the surface.
+  for (let e = Math.ceil(x0); e <= Math.floor(x1); e++) {
+    const x = px(e)
+    svg.append(el('line', { class: 'gridline', x1: x, y1: M.top, x2: x, y2: height - M.bottom }))
+    svg.append(el('text', { class: 'tick', x, y: height - M.bottom + 15, 'text-anchor': 'middle', text: dec(10 ** e) }))
+  }
+  for (const value of niceTicks(y0, y1)) {
+    const y = py(value)
+    svg.append(el('line', { class: 'gridline', x1: M.left, y1: y, x2: width - M.right, y2: y }))
+    svg.append(el('text', { class: 'tick', x: M.left - 8, y: y + 4, 'text-anchor': 'end', text: String(value) }))
+  }
+  svg.append(el('line', { class: 'axisline', x1: M.left, y1: height - M.bottom, x2: width - M.right, y2: height - M.bottom }))
+  // Axis captions sit in the margins, clear of the tick labels.
+  svg.append(el('text', { class: 'tick', x: 0, y: 12, text: 'intelligence' }))
+  svg.append(el('text', { class: 'tick', x: width - M.right, y: height - 6, 'text-anchor': 'end', text: 'blended price per 1M tokens (log)' }))
+
+  // Nondominated frontier: cheapest model to reach each intelligence level.
+  const byPrice = [...priced].sort((a, b) => Number(a.price) - Number(b.price) || b.intelligenceIndex - a.intelligenceIndex)
+  const frontier = []
+  let best = -Infinity
+  for (const m of byPrice) if (m.intelligenceIndex > best) { best = m.intelligenceIndex; frontier.push(m) }
+
+  if (frontier.length > 1) {
+    svg.append(el('path', {
+      class: 'frontier',
+      d: frontier.map((m, i) => `${i ? 'L' : 'M'}${px(Math.log10(Number(m.price)))},${py(m.intelligenceIndex)}`).join(' '),
+    }))
+  }
+
+  // Screen positions are computed once and reused by both the marks and the hover layer.
+  const points = priced.map((m, i) => ({
+    m, i, inFocus: focusSlugs.has(m.slug),
+    x: px(Math.log10(Number(m.price))), y: py(m.intelligenceIndex),
+  }))
+
+  const gContext = el('g'), gFocus = el('g')
+  for (const point of points) {
+    ;(point.inFocus ? gFocus : gContext).append(el('circle', {
+      class: 'dot ' + (point.inFocus ? 'dot-focus' : 'dot-context'),
+      cx: point.x, cy: point.y, r: point.inFocus ? 4.5 : 3,
+      'data-i': point.i, 'data-focus': point.inFocus ? '1' : '0',
+    }))
+  }
+  svg.append(gContext, gFocus)
+
+  // Selective direct label: the extreme of the current selection only — never every point.
+  const labeled = points.filter((p) => p.inFocus).reduce((a, b) => (!a || b.m.intelligenceIndex > a.m.intelligenceIndex ? b : a), null)
+  if (labeled) {
+    const anchor = labeled.x > width - 180 ? 'end' : 'start'
+    svg.append(el('text', {
+      class: 'dlabel', x: labeled.x + (anchor === 'end' ? -9 : 9), y: labeled.y + 4,
+      'text-anchor': anchor, text: labeled.m.name,
+    }))
+  }
+
+  // Nearest-point hover: the pointer only has to be closest, not dead-centre on a dot.
+  const tip = $('tip')
+  let hovered = null
+
+  svg.addEventListener('pointermove', (event) => {
+    const box = svg.getBoundingClientRect()
+    const sx = ((event.clientX - box.left) / box.width) * width
+    const sy = ((event.clientY - box.top) / box.height) * height
+    let nearest = null
+    let bestDist = 24 ** 2
+    for (const point of points) {
+      const dx = point.x - sx
+      const dy = point.y - sy
+      const d = dx * dx + dy * dy
+      if (d < bestDist) { bestDist = d; nearest = point }
+    }
+    if (hovered) hovered.setAttribute('r', hovered.dataset.focus === '1' ? 4.5 : 3)
+    hovered = null
+    if (!nearest) { tip.style.display = 'none'; return }
+    hovered = svg.querySelector(`circle[data-i="${nearest.i}"]`)
+    hovered?.setAttribute('r', 7)
+    showTip(nearest.m, event.clientX, event.clientY)
+  })
+  svg.addEventListener('pointerleave', () => { tip.style.display = 'none' })
+
+  function showTip(model, clientX, clientY) {
+    const rows = [
+      ['Price', formatPrice(Number(model.price))],
+      ['Intelligence', model.intelligenceIndex == null ? '—' : model.intelligenceIndex.toFixed(1)],
+      ['Speed', model.medianOutputTokensPerSecond == null ? '—' : model.medianOutputTokensPerSecond.toFixed(0) + ' t/s'],
+      ['Context', model.contextWindowTokens ? model.contextWindowTokens.toLocaleString('en-US') : '—'],
+    ]
+    tip.replaceChildren(
+      el('div', { class: 'name', text: model.name }),
+      el('div', { class: 'by', text: model.modelCreatorName }),
+      el('dl', {}, rows.flatMap(([label, value]) => [
+        el('dt', {}, [el('i', { class: 'key-line', style: 'background:var(--series-1)' }), document.createTextNode(label)]),
+        el('dd', { text: value }),
+      ])),
+    )
+    tip.style.display = 'block'
+    const box = tip.getBoundingClientRect()
+    tip.style.left = Math.min(clientX + 14, innerWidth - box.width - 10) + 'px'
+    tip.style.top = Math.max(10, clientY - box.height - 12) + 'px'
+  }
+}
+
+// ---------------------------------------------------------------- table
+function renderTable() {
+  const table = $('table')
+  const columns = state.columns.map(fieldByName).filter(Boolean)
+  table.replaceChildren()
+
+  const head = el('tr')
+  for (const field of columns) {
+    const numeric = ['price', 'score', 'number', 'int', 'percent'].includes(field.format)
+    head.append(el('th', {
+      class: numeric ? 'num' : '',
+      onclick: () => {
+        if (state.sort === field.name) state.order = state.order === 'asc' ? 'desc' : 'asc'
+        else { state.sort = field.name; state.order = field.format === 'text' ? 'asc' : 'desc' }
+        load()
+      },
+    }, [
+      document.createTextNode(field.label + ' '),
+      el('span', { class: 'arrow', text: state.sort === field.name ? (state.order === 'asc' ? '▲' : '▼') : '' }),
+    ]))
+  }
+  table.append(el('thead', {}, [head]))
+
+  const body = el('tbody')
+  for (const model of state.models.slice(0, ROW_LIMIT)) {
+    const row = el('tr')
+    for (const field of columns) {
+      const value = model[field.name]
+      const numeric = ['price', 'score', 'number', 'int', 'percent'].includes(field.format)
+      if (field.name === 'name') {
+        const swatch = el('i', { class: 'swatch', style: `background:${model.modelCreatorColor || 'var(--context)'}` })
+        row.append(el('td', { class: 'model' }, [swatch, document.createTextNode(model.name)]))
+      } else if (field.name === 'modelCreatorName') {
+        row.append(el('td', { class: 'muted', text: model.modelCreatorName }))
+      } else {
+        row.append(el('td', { class: numeric ? 'num' : '', text: format(value, field.format) }))
+      }
+    }
+    body.append(row)
+  }
+  table.append(body)
+
+  if (state.matched > ROW_LIMIT) {
+    table.append(el('tfoot', {}, [el('tr', {}, [
+      el('td', { class: 'muted', colspan: String(columns.length), text: `showing the first ${ROW_LIMIT} of ${state.matched} — narrow the filter or sort to see others` }),
+    ])]))
+  }
+}
+
+function renderColumnPicker() {
+  const grid = $('colgrid')
+  grid.replaceChildren()
+  // Only offer fields that actually carry data.
+  for (const field of state.fields.filter((f) => f.coverage > 0)) {
+    const box = el('input', { type: 'checkbox' })
+    box.checked = state.columns.includes(field.name)
+    box.addEventListener('change', () => {
+      state.columns = box.checked
+        ? [...state.columns, field.name]
+        : state.columns.filter((name) => name !== field.name)
+      renderTable()
+    })
+    grid.append(el('label', {}, [
+      box,
+      el('span', { text: field.label }),
+      el('span', { class: 'cov', text: String(field.coverage) }),
+    ]))
+  }
+}
+
+// ---------------------------------------------------------------- wiring
+let timer
+$('filter').addEventListener('input', (event) => {
+  state.filter = event.target.value
+  clearTimeout(timer)
+  timer = setTimeout(load, 180)
+})
+
+$('refresh').addEventListener('click', async (event) => {
+  const button = event.currentTarget
+  button.disabled = true
+  button.textContent = 'Refreshing…'
+  try { await fetch('/api/refresh', { method: 'POST' }); await loadAll(); await load() }
+  finally { button.disabled = false; button.textContent = 'Refresh' }
+})
+
+$('theme').addEventListener('click', () => {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === 'dark'
+    : matchMedia('(prefers-color-scheme: dark)').matches
+  const next = dark ? 'light' : 'dark'
+  document.documentElement.dataset.theme = next
+  localStorage.setItem('theme', next)
+  renderScatter()
+})
+
+const saved = localStorage.getItem('theme')
+if (saved) document.documentElement.dataset.theme = saved
+
+let resizeTimer
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderScatter, 120) })
+
+const fields = await (await fetch('/api/fields')).json()
+state.fields = fields.fields
+renderColumnPicker()
+await loadAll()
+await load()
+</script>
+</body>
+</html>
