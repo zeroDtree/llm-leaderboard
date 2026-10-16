@@ -7,9 +7,11 @@ import { FilterError } from './filter.js'
 import { Query } from './query.js'
 import { ViewerServer } from './server.js'
 import { Store } from './store.js'
+import { ViewService } from './view.js'
 import type { ModelRecord } from './types.js'
 
 const DEFAULT_CACHE_DIR = '.cache'
+const DEFAULT_VIEW_FILE = 'view.json'
 const DEFAULT_PORT = 3000
 const REQUEST_TIMEOUT = 30_000
 
@@ -59,6 +61,7 @@ function consoleExporter(): Exporter {
 
 interface AppOptions {
   cache: string
+  view: string
 }
 
 /** Assemble the cordis application. Services are independent plugins; this is the only place they are wired together. */
@@ -67,6 +70,7 @@ async function createApp(options: AppOptions): Promise<Context> {
   ctx.logger.exporter(consoleExporter())
 
   await ctx.plugin(Store, { dir: options.cache })
+  await ctx.plugin(ViewService, { file: options.view })
   await ctx.plugin(ArtificialAnalysis, { url: LEADERBOARD_URL, timeout: REQUEST_TIMEOUT })
   await ctx.plugin(Query)
 
@@ -211,6 +215,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       cache: { type: 'string' },
+      view: { type: 'string' },
       host: { type: 'string' },
       port: { type: 'string' },
       sort: { type: 'string', short: 's' },
@@ -231,7 +236,7 @@ async function main(): Promise<void> {
     process.exit(values.help ? 0 : 1)
   }
 
-  const options: AppOptions = { cache: values.cache ?? DEFAULT_CACHE_DIR }
+  const options: AppOptions = { cache: values.cache ?? DEFAULT_CACHE_DIR, view: values.view ?? DEFAULT_VIEW_FILE }
   const order = values.order === 'asc' || values.order === 'desc'
     ? values.order
     : values.order == null ? 'desc' : fail(`--order must be "asc" or "desc", got "${values.order}"`)

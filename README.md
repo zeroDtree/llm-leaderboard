@@ -18,7 +18,7 @@ own payload; this reads it directly.
 
 ```
 llm-leaderboard refresh [--cache <dir>]
-llm-leaderboard serve   [--cache <dir>] [--port <n>] [--host <addr>]
+llm-leaderboard serve   [--cache <dir>] [--view <file>] [--port <n>] [--host <addr>]
 llm-leaderboard filter <expression> [--sort <field>] [--order asc|desc]
                                     [--limit <n>] [--offset <n>] [--json | --csv]
 llm-leaderboard fields  [--search <text>]
@@ -72,6 +72,40 @@ Every published field is filterable under its own name, plus short aliases:
 | `ttft`, `latency` | time to first token / end-to-end |
 | `context`, `openWeights`, `reasoning`, `released`, `age` | — |
 
+## The saved view
+
+Your filter, sort order and columns are remembered. Change any of them and the view is
+written to `view.json` in the project root, so reopening the page puts you back exactly
+where you left off — no re-typing a filter.
+
+```json
+{
+  "version": 1,
+  "filter": "price < 1 and intelligence > 40",
+  "sort": "price",
+  "order": "asc",
+  "columns": ["name", "modelCreatorName", "intelligenceIndex", "price"]
+}
+```
+
+It is a plain file, so you can edit it by hand, keep it in version control, or diff it.
+Point it somewhere else with `--view <file>`.
+
+**Export** downloads the current view; **Import** loads one back. Both go through the same
+normalization as everything else, so a hand-written file with an alias (`creator`) or a
+column that no longer exists still loads — unknown parts fall back to their defaults rather
+than failing the whole file.
+
+A few deliberate choices:
+
+- **It saves itself.** There is no "Save" button; changes are written 500 ms after you stop
+  typing, and a pending edit is flushed if you close the tab.
+- **An unfinished filter is a valid thing to save.** Expressions are stored verbatim — the
+  page reports syntax errors live, so there is no reason to refuse to keep one.
+- **Field names are canonicalized on the way in.** `intelligence` becomes `intelligenceIndex`,
+  `creator` becomes `modelCreatorName`, duplicates are dropped. A saved view cannot rot into
+  a set of names that half-work.
+
 ## Web UI
 
 - **Filter box** with live match count and inline errors (with a caret at the offending
@@ -81,6 +115,8 @@ Every published field is filterable under its own name, plus short aliases:
   you can see what a filter *excluded*. The orange line is the best-value frontier: the
   cheapest model to reach each intelligence level.
 - **Sortable table** with a column picker over all 54 fields
+- **Filter, sort and columns persist** across sessions — see [the saved view](#the-saved-view)
+  — with Export/Import for moving a view between machines
 - Light and dark themes; hover any point for detail
 
 ## Architecture
@@ -92,7 +128,8 @@ Four Cordis services, each independently loadable and unloadable:
 | `store` | — | Snapshots in `.cache/` |
 | `aa` | `store` | Fetch and parse the page into records |
 | `query` | — | Compile a filter expression; filter, sort, page |
-| `server` | `aa`, `query` | HTTP API and the viewer |
+| `view` | — | The saved filter, sort and columns, as JSON on disk |
+| `server` | `aa`, `query`, `view` | HTTP API and the viewer |
 
 `aa` is the only module that knows the page's payload format, so a format change is a
 one-file fix. Adding a service needs no changes elsewhere — Cordis resolves it and reloads
@@ -107,6 +144,8 @@ surface, and an unknown field is a positioned `FilterError` rather than a `Refer
 ```
 GET  /api/models?filter=<expr>&sort=<field>&order=asc|desc&limit=&offset=
 GET  /api/fields
+GET  /api/view             the saved view (defaults if nothing is saved yet)
+PUT  /api/view             replace it; the body is normalized, not rejected
 POST /api/refresh
 ```
 

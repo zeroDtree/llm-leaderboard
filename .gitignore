@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .cache/
+
+# Your saved filter and columns — personal state, not source.
+view.json

@@ -148,9 +148,22 @@ function makeRawField(key: string): FieldDef {
  */
 export const FIELDS: FieldDef[] = [...DERIVED, ...JOINED, ...RAW_KEYS.map(makeRawField)]
 
-/** Look up a canonical field by exact name. */
+/** Look up a field by canonical name or alias. Case-insensitive; `undefined` if unknown. */
+export function findField(name: string): FieldDef | undefined {
+  return FIELD_MAP.get(name.toLowerCase())
+}
+
+/**
+ * Look up a field by canonical name or alias.
+ *
+ * Alias-aware on purpose: a saved view may say `sort: "intelligence"` where the canonical
+ * name is `intelligenceIndex`, and both must mean the same thing. Callers that need to
+ * report an unknown name to a user should use {@link findField} and raise their own error.
+ *
+ * @throws {Error} when the name is not a known field — an internal invariant, not input.
+ */
 export function fieldByName(name: string): FieldDef {
-  const field = FIELDS.find((f) => f.name === name)
+  const field = findField(name)
   if (!field) throw new Error(`internal error: no such field "${name}"`)
   return field
 }

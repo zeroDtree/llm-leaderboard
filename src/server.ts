@@ -24,6 +24,21 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(payload)
 }
 
+/** A saved view is a few hundred bytes; anything larger is a mistake or an attack. */
+const MAX_BODY_BYTES = 1 << 20
+
+async function readBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const buffer = chunk as Buffer
+    size += buffer.length
+    if (size > MAX_BODY_BYTES) throw new Error('body too large')
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 function numberParam(value: string | null): number | undefined {
   if (value == null || value === '') return undefined
   const parsed = Number(value)
@@ -38,7 +53,7 @@ export class ViewerServer extends Service {
     port: Schema.number().default(3000).description('Use 0 for an ephemeral port.'),
   })
 
-  static inject = ['aa', 'query']
+  static inject = ['aa', 'query', 'view']
 
   private readonly config: { host: string; port: number }
   private address = ''
@@ -83,6 +98,10 @@ export class ViewerServer extends Service {
     if (path === '/api/models') return this.serveModels(url.searchParams, response)
     if (path === '/api/fields') return this.serveFields(response)
     if (path === '/api/refresh' && request.method === 'POST') return this.serveRefresh(response)
+    if (path === '/api/view') {
+      if (request.method === 'PUT') return this.saveView(request, response)
+      return json(response, 200, this.ctx.view.get())
+    }
 
     json(response, 404, { error: `no route for ${path}` })
   }
@@ -133,6 +152,20 @@ export class ViewerServer extends Service {
       })),
       total: models.length,
     })
+  }
+
+  /**
+   * The body is normalized rather than rejected: a hand-edited file with one bad column
+   * should still load. Only unparseable JSON is a hard failure.
+   */
+  private async saveView(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    let body: unknown
+    try {
+      body = JSON.parse(await readBody(request))
+    } catch (error) {
+      return json(response, 400, { error: `could not read view: ${(error as Error).message}` })
+    }
+    json(response, 200, await this.ctx.view.save(body))
   }
 
   private async serveRefresh(response: ServerResponse): Promise<void> {
