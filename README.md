@@ -11,8 +11,8 @@ pnpm refresh            # scrape ~704 models into .cache/
 pnpm serve              # then open http://127.0.0.1:3000
 ```
 
-No API key, no browser automation. The leaderboard page publishes every model record in its
-own payload; this reads it directly.
+No API key, no browser automation. The leaderboard page inlines the models in its default
+view and links an encrypted dataset with the complete list; this reads both directly.
 
 ## Commands
 

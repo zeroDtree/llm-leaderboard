@@ -22,6 +22,13 @@ const USER_AGENT = 'llm-leaderboard/0.1 (personal, local use)'
  */
 const MIN_PLAUSIBLE_MODELS = 100
 
+/**
+ * Full records carry dozens of fields; the release-mapping records that sit under a
+ * nearby `models` key carry three or four. Rejecting the narrow ones here is what keeps
+ * a page reshuffle from silently caching names with every statistic missing.
+ */
+const MIN_RECORD_FIELDS = 10
+
 // ---------------------------------------------------------------------------
 // Page parsing
 //
@@ -30,8 +37,10 @@ const MIN_PLAUSIBLE_MODELS = 100
 //
 //   self.__next_f.push([1,"<json-escaped string>"])
 //
-// whose concatenation is a second JSON document containing every model record.
-// The functions below are deliberately pure so they can be tested against a saved
+// whose concatenation is a second JSON document. The page itself inlines only the
+// models in its default view (`initialModels`) and points at an encrypted, gzipped
+// dataset (`manifest`) for the complete leaderboard; both are read here. The
+// functions below are deliberately pure so they can be tested against a saved
 // page without touching the network, and they key off structure (the record with
 // the most fields) rather than a hardcoded byte offset, so a page rebuild that
 // shuffles chunk boundaries does not break them.
@@ -93,8 +102,8 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 /**
  * The leaderboard records are the widest objects in the payload — 50-odd fields,
- * against three for the release-mapping records that share the `models` key. Picking
- * the widest candidate is what keeps this correct without a hardcoded chunk offset.
+ * against three or four for the release-mapping records that share the `models` key.
+ * Picking the widest candidate is what keeps this correct without a hardcoded chunk offset.
  */
 function widestArrayOf(candidates: unknown[][], shape: (row: Record<string, unknown>) => boolean): unknown[][] {
   return candidates
@@ -107,6 +116,61 @@ function fieldCount(rows: unknown[]): number {
   return isObject(first) ? Object.keys(first).length : 0
 }
 
+/** A leaderboard row rather than a release mapping: it has a slug and real content. */
+function isModelRow(row: Record<string, unknown>): boolean {
+  return typeof row.slug === 'string' && Object.keys(row).length >= MIN_RECORD_FIELDS
+}
+
+/** The encrypted dataset the page's client fetches to show models outside the default view. */
+export interface Manifest {
+  /** Same-origin path to the encrypted, gzipped JSON array. */
+  path: string
+  /** Hex AES-GCM key; the IV is the first 12 bytes of its SHA-256 digest. */
+  key: string
+}
+
+export interface LeaderboardPage {
+  /** Records rendered into the page itself — the current, non-deprecated models. */
+  models: ModelRecord[]
+  /** Slug -> release date, used to decorate whichever record set wins. */
+  releaseDates: Map<string, string>
+  /** Present on pages that publish the complete dataset as a separate fetch. */
+  manifest?: Manifest
+}
+
+function withReleaseDates(models: ModelRecord[], releaseDates: Map<string, string>): ModelRecord[] {
+  return models.map((model) => (
+    releaseDates.has(model.slug) ? { ...model, releaseDate: releaseDates.get(model.slug) } : { ...model }
+  ))
+}
+
+/**
+ * Pull everything the page offers: the inline model records, release metadata, and the
+ * manifest of the complete dataset.
+ *
+ * The page used to inline every record under `models`. It now inlines only the models in
+ * the default view under `initialModels` and publishes the rest — mostly deprecated
+ * models — through the encrypted manifest, so the inline records alone are incomplete.
+ */
+export function parsePage(html: string): LeaderboardPage {
+  const payload = flightPayload(html)
+  const releaseDates = parseReleaseDates(payload)
+
+  const candidates = [
+    ...findAfter<unknown[]>(payload, '"initialModels":[', '['),
+    // Older pages inlined the full set under `models`; kept as a fallback.
+    ...findAfter<unknown[]>(payload, '"models":[', '['),
+  ]
+  const [best] = widestArrayOf(candidates, isModelRow)
+  if (!best) throw new Error('no model records found in page payload — the page format probably changed')
+
+  return {
+    models: withReleaseDates(best as ModelRecord[], releaseDates),
+    releaseDates,
+    manifest: parseManifest(payload),
+  }
+}
+
 /**
  * Pull the model records out of a leaderboard page and attach release dates.
  *
@@ -114,15 +178,41 @@ function fieldCount(rows: unknown[]): number {
  * different slug, so it has to be joined in.
  */
 export function parseLeaderboard(html: string): ModelRecord[] {
-  const payload = flightPayload(html)
+  return parsePage(html).models
+}
 
-  const [best] = widestArrayOf(findAfter<unknown[]>(payload, '"models":[', '['), (row) => 'slug' in row)
-  if (!best) throw new Error('no model records found in page payload — the page format probably changed')
+/** Find the encrypted-dataset manifest, if the page publishes one. */
+export function parseManifest(payload: string): Manifest | undefined {
+  for (const value of findAfter<Record<string, unknown>>(payload, '"manifest":', '{')) {
+    if (typeof value.path === 'string' && typeof value.key === 'string') {
+      return { path: value.path, key: value.key }
+    }
+  }
+  return undefined
+}
 
-  const releaseDates = parseReleaseDates(payload)
-  return (best as ModelRecord[]).map((model) => (
-    releaseDates.has(model.slug) ? { ...model, releaseDate: releaseDates.get(model.slug) } : { ...model }
-  ))
+/**
+ * Decrypt and decompress a manifest dataset.
+ *
+ * The page's client derives an AES-GCM IV from the key itself (the first 12 bytes of the
+ * SHA-256 digest of the raw key bytes) and gzips the JSON before encrypting. Mirroring
+ * that here lets a refresh see the same complete dataset the site loads.
+ */
+export async function decodeManifest(encrypted: ArrayBuffer, keyHex: string): Promise<unknown> {
+  if (keyHex.length === 0 || keyHex.length % 2 !== 0 || /[^0-9a-f]/i.test(keyHex)) {
+    throw new Error('malformed manifest key')
+  }
+  const raw = new Uint8Array(keyHex.length / 2)
+  for (let i = 0; i < raw.length; i++) {
+    raw[i] = Number.parseInt(keyHex.slice(i * 2, i * 2 + 2), 16)
+  }
+  const iv = new Uint8Array(await crypto.subtle.digest('SHA-256', raw)).slice(0, 12)
+  const key = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['decrypt'])
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, encrypted)
+  const json = await new Response(
+    new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip')),
+  ).text()
+  return JSON.parse(json)
 }
 
 /** Map leaderboard slug -> ISO release date, via the `releaseSlug` indirection. */
@@ -199,7 +289,23 @@ export class ArtificialAnalysis extends Service {
     })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText} from ${this.config.url}`)
 
-    const models = parseLeaderboard(await response.text())
+    const page = parsePage(await response.text())
+    let models = page.models
+
+    if (page.manifest) {
+      try {
+        const complete = await this.fetchManifest(page.manifest)
+        if (complete.length >= MIN_PLAUSIBLE_MODELS) {
+          models = withReleaseDates(complete, page.releaseDates)
+        } else {
+          logger.warn(`manifest held only ${complete.length} models; keeping the page's ${models.length}`)
+        }
+      } catch (error) {
+        // A failed manifest fetch should not discard a usable page; the next refresh retries.
+        logger.warn('could not load the complete dataset; using the page records:', error)
+      }
+    }
+
     if (models.length < MIN_PLAUSIBLE_MODELS) {
       throw new Error(
         `parsed only ${models.length} models (expected at least ${MIN_PLAUSIBLE_MODELS}); ` +
@@ -217,6 +323,23 @@ export class ArtificialAnalysis extends Service {
     this.fetchedAt = snapshot.fetchedAt
     logger.info('wrote', models.length, 'models to', path)
     return snapshot
+  }
+
+  /** Fetch and decode the encrypted dataset linked from the page. */
+  private async fetchManifest(manifest: Manifest): Promise<ModelRecord[]> {
+    const url = new URL(manifest.path, this.config.url)
+    const response = await fetch(url, {
+      headers: { 'user-agent': USER_AGENT, accept: 'application/octet-stream, */*' },
+      signal: AbortSignal.timeout(this.config.timeout),
+    })
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText} from ${url}`)
+
+    const data = await decodeManifest(await response.arrayBuffer(), manifest.key)
+    if (!Array.isArray(data) || data.length === 0) throw new Error('manifest dataset is not a non-empty array')
+    if (!data.every((row) => isObject(row) && isModelRow(row))) {
+      throw new Error('manifest dataset does not contain model records')
+    }
+    return data as unknown as ModelRecord[]
   }
 
   /** Load from cache if nothing is in memory yet. Used when serving without a refresh. */

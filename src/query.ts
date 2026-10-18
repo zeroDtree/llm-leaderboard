@@ -33,15 +33,10 @@ export interface QueryResult {
 const isMissing = (value: unknown): boolean => value === null || value === undefined || value === ''
 
 /**
- * Order two values, always pushing missing data to the end.
- *
- * Half the leaderboard has no published price, and burying those rows under `asc` is
- * more useful than having them float to the top.
+ * Order two present values. Missing values are handled by the caller so that their
+ * placement can be kept independent of the sort direction.
  */
 function compareValues(a: unknown, b: unknown): number {
-  const aMissing = isMissing(a)
-  const bMissing = isMissing(b)
-  if (aMissing || bMissing) return aMissing && bMissing ? 0 : aMissing ? 1 : -1
   if (typeof a === 'number' && typeof b === 'number') return a - b
   if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b)
   return String(a).localeCompare(String(b))
@@ -81,7 +76,14 @@ export class Query extends Service {
     if (!accessor) throw new FilterError(`unknown field "${sort}"`)
 
     const sorted = [...rows].sort((a, b) => {
-      const result = compareValues(accessor(a), accessor(b))
+      const aValue = accessor(a)
+      const bValue = accessor(b)
+      const aMissing = isMissing(aValue)
+      const bMissing = isMissing(bValue)
+      // Missing data stays at the end in both directions — negating the comparison for
+      // `desc` must not also flip where the rows without a value land.
+      if (aMissing !== bMissing) return aMissing ? 1 : -1
+      const result = aMissing ? 0 : compareValues(aValue, bValue)
       // Stable, meaningful tie-break so equal scores have a deterministic order.
       return result !== 0 ? (order === 'desc' ? -result : result) : compareValues(a.name, b.name)
     })
