@@ -30,9 +30,9 @@ export const DEFAULT_VIEW: View = {
   sort: 'intelligenceIndex',
   order: 'desc',
   columns: [
-    'name', 'modelCreatorName', 'isReasoning', 'intelligenceIndex', 'price',
-    'price1mInputTokens', 'price1mOutputTokens', 'medianOutputTokensPerSecond',
-    'medianTimeToFirstTokenSeconds', 'contextWindowTokens', 'releaseDate',
+    'name', 'intelligenceIndex', 'releaseDate', 'modelCreatorName',
+    'price1mInputTokens', 'price1mOutputTokens', 'cacheHitPrice', 'cacheWritePrice',
+    'intelligenceIndexCostPerTask', 'medianOutputTokensPerSecond',
   ],
 }
 
