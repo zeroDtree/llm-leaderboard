@@ -170,6 +170,7 @@
     <button id="export" title="Download the current filter and columns as a JSON file">Export</button>
     <button id="import" title="Load a filter and columns from a JSON file">Import</button>
     <button id="theme">Theme</button>
+    <button id="defaults" title="Restore the built-in filter, sort and columns">Defaults</button>
     <input id="importFile" type="file" accept="application/json,.json" hidden>
   </header>
 
@@ -725,6 +726,26 @@ async function putView(candidate) {
   if (!response.ok) throw new Error(payload.error ?? 'could not save the view')
   return payload
 }
+
+/** Restore the built-in view, replacing whatever this browser or the server saved. */
+$('defaults').addEventListener('click', async () => {
+  try {
+    clearTimeout(saveTimer)
+    saveTimer = null
+    unsaved = false
+
+    const view = STATIC ? lib.normalizeView(lib.DEFAULT_VIEW) : await putView({})
+    if (STATIC) {
+      try { localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(view)) } catch { /* applies this session */ }
+    }
+    applyView(view)
+    renderColumnPicker()
+    await load()
+    flash('✓ defaults restored')
+  } catch (error) {
+    flash(`Could not reset: ${error.message}`, true)
+  }
+})
 
 $('export').addEventListener('click', async () => {
   let view

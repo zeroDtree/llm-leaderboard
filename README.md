@@ -97,7 +97,10 @@ where you left off — no re-typing a filter.
 
 It is a plain file, so you can edit it by hand, keep it in version control, or diff it.
 Point it somewhere else with `--view <file>`. On the GitHub Pages build there is no
-server to write this file, so the same view is kept in `localStorage` instead.
+server to write this file, so the same view is kept in `localStorage` instead. A saved
+view deliberately wins over the published defaults — changing the default columns does
+not rewrite what an existing browser remembered. **Defaults** restores the built-in
+filter, sort and columns on demand.
 
 **Export** downloads the current view; **Import** loads one back. Both go through the same
 normalization as everything else, so a hand-written file with an alias (`creator`) or a
@@ -125,6 +128,7 @@ A few deliberate choices:
 - **Sortable table** with a column picker over all 54 fields
 - **Filter, sort and columns persist** across sessions — see [the saved view](#the-saved-view)
   — with Export/Import for moving a view between machines
+- **Defaults** restores the built-in filter, sort and columns, replacing a saved view
 - Light and dark themes; hover any point for detail
 
 ## Deploying to GitHub Pages
@@ -163,6 +167,8 @@ snapshot's `fetchedAt`, so its freshness is visible.
 - filtering, sorting and paging run in the browser via the same `runQuery` implementation
   the server calls
 - the saved view lives in `localStorage` instead of `view.json`; Export/Import still work
+- a saved view wins over the published default, so the **Defaults** button is the way to
+  pick up a changed `DEFAULT_VIEW` in a browser that already saved one
 - the Refresh button is hidden — run the deploy workflow manually from the Actions tab
 
 Every URL is relative, so the site works from a project path such as
