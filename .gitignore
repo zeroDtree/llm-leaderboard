@@ -2,5 +2,9 @@ node_modules/
 dist/
 .cache/
 
+# Static site produced by `pnpm build:site` and uploaded to GitHub Pages.
+site/
+
 # Your saved filter and columns — personal state, not source.
 view.json
+.comonad/

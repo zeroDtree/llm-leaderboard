@@ -1,0 +1,71 @@
+name: Deploy leaderboard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Refresh every six hours (00:23, 06:23, 12:23, 18:23 UTC). GitHub's cron is UTC,
+    # best-effort, and may run a few minutes late under load.
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+# Standard GitHub Pages deployment permissions. `id-token` lets deploy-pages prove the
+# artifact came from this workflow run.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deployment finish rather than cancelling it halfway; queue the next one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # Scrapes the public leaderboard into .cache/models.json. A refresh that no longer
+      # parses fails the job, so a broken page format cannot publish an empty site.
+      - name: Scrape the latest leaderboard
+        run: pnpm refresh
+
+      # -> site/: index.html, data/models.json, data/view.json, assets/client.js
+      - name: Build the static site
+        run: pnpm build:site
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

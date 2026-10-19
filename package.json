@@ -4,6 +4,7 @@
   "private": true,
   "description": "Scrape the Artificial Analysis LLM leaderboard and browse/filter it locally.",
   "type": "module",
+  "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=22"
   },
@@ -16,6 +17,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:site": "tsx src/index.ts export --out site",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/index.ts",
     "refresh": "tsx src/index.ts refresh",
@@ -28,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.20.7",
     "typescript": "^5.9.3"
   }

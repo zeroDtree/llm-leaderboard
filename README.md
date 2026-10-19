@@ -2,12 +2,14 @@
 
 Scrapes the [Artificial Analysis](https://artificialanalysis.ai/leaderboards/models) LLM
 leaderboard and lets you browse and filter it locally — from a small web UI or the command line.
+It can also publish itself to GitHub Pages, where a scheduled workflow refreshes the data
+every six hours.
 
-Built on [Cordis](https://github.com/cordiverse/cordis) v4 as four independent services.
+Built on [Cordis](https://github.com/cordiverse/cordis) v4 as five independent services.
 
 ```bash
 pnpm install
-pnpm refresh            # scrape ~704 models into .cache/
+pnpm refresh            # scrape ~700 models into .cache/
 pnpm serve              # then open http://127.0.0.1:3000
 ```
 
@@ -22,7 +24,12 @@ llm-leaderboard serve   [--cache <dir>] [--view <file>] [--port <n>] [--host <ad
 llm-leaderboard filter <expression> [--sort <field>] [--order asc|desc]
                                     [--limit <n>] [--offset <n>] [--json | --csv]
 llm-leaderboard fields  [--search <text>]
+llm-leaderboard export  [--out <dir>] [--cache <dir>] [--view <file>]
 ```
+
+`export` writes a static site — the viewer, the cached snapshot, and a browser bundle of
+the query engine — to `<dir>` (default `site`). It uses the cached snapshot and scrapes
+first only when the cache is empty.
 
 ```bash
 llm-leaderboard filter 'price < 1'
@@ -52,10 +59,10 @@ value, which makes `not deprecated` read as written.
 `price` is their own 3:1 blend, `(3 × input + output) / 4`. Use `inputPrice` / `outputPrice`
 for the raw figures.
 
-**Missing data satisfies no comparison.** 249 of 704 models publish no price, and a third
-omit the performance block entirely. `price < 1` excludes them rather than treating them as
-free, and `price != 0` excludes them rather than sweeping them in. Only `price == null`
-matches them; use `not (…)` when you want the looser reading.
+**Missing data satisfies no comparison.** Roughly a third of models publish no price, and a
+third omit the performance block entirely. `price < 1` excludes them rather than treating
+them as free, and `price != 0` excludes them rather than sweeping them in. Only
+`price == null` matches them; use `not (…)` when you want the looser reading.
 
 ### Fields
 
@@ -89,7 +96,8 @@ where you left off — no re-typing a filter.
 ```
 
 It is a plain file, so you can edit it by hand, keep it in version control, or diff it.
-Point it somewhere else with `--view <file>`.
+Point it somewhere else with `--view <file>`. On the GitHub Pages build there is no
+server to write this file, so the same view is kept in `localStorage` instead.
 
 **Export** downloads the current view; **Import** loads one back. Both go through the same
 normalization as everything else, so a hand-written file with an alias (`creator`) or a
@@ -119,9 +127,62 @@ A few deliberate choices:
   — with Export/Import for moving a view between machines
 - Light and dark themes; hover any point for detail
 
+## Deploying to GitHub Pages
+
+Two workflows ship with the repo:
+
+| Workflow | Runs on | Does |
+|---|---|---|
+| [`deploy.yml`](.github/workflows/deploy.yml) | every 6 hours (00:23, 06:23, 12:23, 18:23 UTC), push to `main`, manual | scrape → build → deploy |
+| [`ci.yml`](.github/workflows/ci.yml) | pull requests, manual | typecheck, tests, build |
+
+**One-time setup.** In the repository, open **Settings → Pages → Build and deployment**
+and set **Source** to **GitHub Actions**. Nothing else is needed: the workflow uploads
+`site/` as the Pages artifact, so there is no `gh-pages` branch and the scraped data never
+enters git history.
+
+**What a deploy does.**
+
+1. installs, typechecks and tests
+2. `pnpm refresh` scrapes the live leaderboard into `.cache/models.json`
+3. `pnpm build:site` writes `site/`: the viewer, `data/models.json`, `data/view.json`, and
+   `assets/client.js` — a browser bundle of the same filter engine the server uses
+4. uploads `site/` as a Pages artifact and deploys it
+
+The view published with the build is `view.json` if one exists at build time. Since that
+file is gitignored as personal state, CI publishes `DEFAULT_VIEW`; visitors' changes then
+live in their own browsers.
+
+Scheduled runs use the default branch, and GitHub's scheduler is UTC and best-effort. If
+the scrape fails or the page no longer parses, the job fails and the previous deployment
+keeps serving — a format change can never publish an empty leaderboard. The page shows the
+snapshot's `fetchedAt`, so its freshness is visible.
+
+**Static mode.** GitHub Pages serves files only, so on the deployed site:
+
+- filtering, sorting and paging run in the browser via the same `runQuery` implementation
+  the server calls
+- the saved view lives in `localStorage` instead of `view.json`; Export/Import still work
+- the Refresh button is hidden — run the deploy workflow manually from the Actions tab
+
+Every URL is relative, so the site works from a project path such as
+`https://<user>.github.io/llm-leaderboard/`.
+
+**Local preview.**
+
+```bash
+pnpm build:site
+python3 -m http.server 8000 --directory site   # http://localhost:8000/
+```
+
+**Forks.** Scheduled workflows are disabled on forks until enabled in the Actions tab, and
+GitHub disables a schedule after 60 days without repository commits — push a commit or run
+the workflow manually to revive it. If Artificial Analysis blocks the runner's IP, the job
+fails loudly; use the keyed API (see [Notes](#notes)) or a self-hosted runner.
+
 ## Architecture
 
-Four Cordis services, each independently loadable and unloadable:
+Five Cordis services, each independently loadable and unloadable:
 
 | Service | Injects | Responsibility |
 |---|---|---|
@@ -134,6 +195,11 @@ Four Cordis services, each independently loadable and unloadable:
 `aa` is the only module that knows the page's payload format, so a format change is a
 one-file fix. Adding a service needs no changes elsewhere — Cordis resolves it and reloads
 dependents automatically.
+
+`export` is a build command rather than a service: it loads the same app context, then
+writes the static directory GitHub Pages serves (`src/export-site.ts`). The browser bundle
+(`src/client.ts`) pulls in only the pure modules — `query-core`, `filter`, `fields`,
+`view-config` — so no Node or Cordis code reaches the page.
 
 The filter engine (`src/filter.ts`) is a hand-written lexer and recursive-descent parser. It
 compiles to a tree of closures over field accessors — no `eval`, so there is no code-injection
@@ -152,9 +218,10 @@ POST /api/refresh
 ## Development
 
 ```bash
-pnpm test        # 24 tests: filter semantics and page parsing
+pnpm test        # 44 tests: filters, parsing, ordering, view normalization, static export
 pnpm typecheck
 pnpm build       # tsc -p tsconfig.build.json -> dist/
+pnpm build:site  # static site in site/ (the GitHub Pages artifact)
 ```
 
 Parsing tests run against a synthetic page, so they are deterministic and offline.

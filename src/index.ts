@@ -2,6 +2,7 @@
 import { parseArgs } from 'node:util'
 import { Context, type Exporter } from 'cordis'
 import { ArtificialAnalysis, LEADERBOARD_URL } from './aa.js'
+import { exportSite } from './export-site.js'
 import { FIELDS, fieldByName, formatValue } from './fields.js'
 import { FilterError } from './filter.js'
 import { Query } from './query.js'
@@ -12,6 +13,7 @@ import type { ModelRecord } from './types.js'
 
 const DEFAULT_CACHE_DIR = '.cache'
 const DEFAULT_VIEW_FILE = 'view.json'
+const DEFAULT_SITE_DIR = 'site'
 const DEFAULT_PORT = 3000
 const REQUEST_TIMEOUT = 30_000
 
@@ -24,6 +26,12 @@ const USAGE = `
     llm-leaderboard filter <expression> [--sort <field>] [--order asc|desc]
                                         [--limit <n>] [--offset <n>] [--json | --csv]
     llm-leaderboard fields  [--search <text>]
+    llm-leaderboard export  [--out <dir>] [--cache <dir>] [--view <file>]
+
+  Static export
+    'export' writes the viewer, the cached snapshot, and a browser bundle of the query
+    engine to <dir> (default: site). GitHub Pages serves it as-is; use it from CI with
+    'pnpm build:site'. No server is involved.
 
   Examples
     llm-leaderboard filter 'price < 1'
@@ -188,6 +196,14 @@ function commandFilter(ctx: Context, expression: string, flags: FilterFlags): vo
   process.stdout.write('\n')
 }
 
+async function commandExport(options: AppOptions, out: string): Promise<void> {
+  // Uses the cached snapshot when there is one; a fresh checkout scrapes first.
+  const ctx = await loadApp(options)
+  if (ctx.aa.list().length === 0) fail('the cache holds no models — run `refresh` first')
+  const result = await exportSite({ out, snapshot: ctx.aa.snapshot, view: ctx.view.get() })
+  process.stdout.write(`\n${result.models} models — static site written to ${result.out}\n\n`)
+}
+
 async function commandFields(search: string | undefined): Promise<void> {
   const direction = search ? ` matching "${search}"` : ''
   const fields = FIELDS.filter((field) => {
@@ -216,6 +232,7 @@ async function main(): Promise<void> {
     options: {
       cache: { type: 'string' },
       view: { type: 'string' },
+      out: { type: 'string' },
       host: { type: 'string' },
       port: { type: 'string' },
       sort: { type: 'string', short: 's' },
@@ -273,8 +290,11 @@ async function main(): Promise<void> {
     case 'fields':
       return commandFields(values.search)
 
+    case 'export':
+      return commandExport(options, values.out ?? DEFAULT_SITE_DIR)
+
     default:
-      fail(`unknown command "${command}" — expected refresh, serve, filter, or fields`)
+      fail(`unknown command "${command}" — expected refresh, serve, filter, fields, or export`)
   }
 }
 

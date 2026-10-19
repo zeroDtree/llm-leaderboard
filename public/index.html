@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<!-- No icon: avoids a 404 when the page is served by a plain static host such as Pages. -->
+<link rel="icon" href="data:,">
+<!-- Replaced by `llm-leaderboard export` with the flag that switches this page to static mode. -->
+<!-- __STATIC_BOOTSTRAP__ -->
 <title>LLM Leaderboard</title>
 <style>
   /* Palette roles. Dark is a selected set of steps for the dark surface, not a flip;
@@ -213,9 +217,18 @@ const $ = (id) => document.getElementById(id)
 
 const ROW_LIMIT = 500
 
-// The saved view is the server's business — it owns the file, the defaults and the
-// validation. This end just renders whatever it is handed and posts changes back.
-const state = { filter: '', sort: 'intelligence', order: 'desc', columns: [], fields: [], all: [], models: [], matched: 0, total: 0 }
+// The GitHub Pages build has no API: `export` sets the flag injected in <head>, bundles
+// the query engine to assets/client.js, and writes the snapshot to data/*.json. The
+// local `serve` command leaves the flag unset and uses the HTTP API as before.
+const STATIC = Boolean(window.__LLM_LEADERBOARD_STATIC__)
+const VIEW_STORAGE_KEY = 'llm-leaderboard:view'
+const DATA = './data'
+let lib = null
+
+// The saved view is the server's business in live mode — it owns the file, the defaults
+// and the validation. In static mode the bundled normalizer does the same job in the
+// browser and persistence moves to localStorage.
+const state = { filter: '', sort: 'intelligence', order: 'desc', columns: [], fields: [], all: [], models: [], matched: 0, total: 0, fetchedAt: null }
 
 // ---------------------------------------------------------------- the saved view
 let saveTimer = null
@@ -236,16 +249,39 @@ function scheduleSave() {
   saveTimer = setTimeout(saveView, 500)
 }
 
+/** The view described by the current UI state, before server/browser normalization. */
+function currentView() {
+  return {
+    version: lib?.VIEW_VERSION ?? 1,
+    filter: state.filter,
+    sort: state.sort,
+    order: state.order,
+    columns: state.columns,
+  }
+}
+
 async function saveView(keepalive = false) {
   clearTimeout(saveTimer)
   saveTimer = null
   if (!unsaved) return
   unsaved = false
+
+  if (STATIC) {
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(currentView()))
+      flash('✓ saved')
+    } catch (error) {
+      // Storage can be unavailable (private mode, quota); the session still works.
+      flash(`Could not save: ${error.message}`, true)
+    }
+    return
+  }
+
   try {
     const response = await fetch('/api/view', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ filter: state.filter, sort: state.sort, order: state.order, columns: state.columns }),
+      body: JSON.stringify(currentView()),
       keepalive,
     })
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? response.statusText)
@@ -314,32 +350,46 @@ function el(tag, props = {}, children = []) {
 }
 
 // ---------------------------------------------------------------- data
-/** The unfiltered leaderboard, fetched once — it is the scatter's context layer. */
+/**
+ * The unfiltered leaderboard, fetched once — it is the scatter's context layer.
+ * In static mode it was already loaded from data/models.json at boot.
+ */
 async function loadAll() {
+  if (STATIC) return
   const payload = await (await fetch('/api/models')).json()
   state.all = payload.models
 }
 
 async function load() {
-  const params = new URLSearchParams({ sort: state.sort, order: state.order })
-  if (state.filter.trim()) params.set('filter', state.filter)
   let payload
-  try {
-    const response = await fetch('/api/models?' + params)
-    payload = await response.json()
-    if (!response.ok) return showError(payload.error ?? 'request failed', payload.pos)
-  } catch {
-    return showError('cannot reach the local server', null)
+  if (STATIC) {
+    try {
+      // The same runQuery the server calls, bundled into assets/client.js.
+      payload = {
+        ...lib.runQuery(state.all, { filter: state.filter, sort: state.sort, order: state.order }),
+        fetchedAt: state.fetchedAt,
+      }
+    } catch (error) {
+      return showError(error instanceof Error ? error.message : String(error), error.pos)
+    }
+    showError(null)
+  } else {
+    const params = new URLSearchParams({ sort: state.sort, order: state.order })
+    if (state.filter.trim()) params.set('filter', state.filter)
+    try {
+      const response = await fetch('/api/models?' + params)
+      payload = await response.json()
+      if (!response.ok) return showError(payload.error ?? 'request failed', payload.pos)
+    } catch {
+      return showError('cannot reach the local server', null)
+    }
+    showError(null)
   }
-  showError(null)
+
   state.models = payload.models
   state.matched = payload.matched
   state.total = payload.total
-  $('meta').replaceChildren(
-    document.createTextNode(`${payload.total} models · ${String(payload.fetchedAt).slice(0, 10)} · `),
-    el('a', { href: 'https://artificialanalysis.ai/leaderboards/models', target: '_blank', rel: 'noopener', text: 'Artificial Analysis' }),
-  )
-  $('count').textContent = `${payload.matched} of ${payload.total} models`
+  renderMeta(payload.total, payload.matched, payload.fetchedAt)
   try {
     renderScatter()
     renderTable()
@@ -347,6 +397,59 @@ async function load() {
     // Surface a render failure instead of leaving a silently blank chart or table.
     showError(`render failed: ${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+function renderMeta(total, matched, fetchedAt) {
+  $('meta').replaceChildren(
+    document.createTextNode(`${total} models · ${String(fetchedAt).slice(0, 10)} · `),
+    el('a', { href: 'https://artificialanalysis.ai/leaderboards/models', target: '_blank', rel: 'noopener', text: 'Artificial Analysis' }),
+  )
+  $('count').textContent = `${matched} of ${total} models`
+}
+
+/**
+ * Static mode: no API. The snapshot, the published default view and the bundled query
+ * engine all live next to index.html, so this works on GitHub Pages — including project
+ * sites served from /<repo>/, because every URL here is relative.
+ */
+async function bootStatic() {
+  lib = await import('./assets/client.js')
+  const [data, publishedView] = await Promise.all([
+    fetch(`${DATA}/models.json`, { cache: 'no-cache' }).then((response) => {
+      if (!response.ok) throw new Error(`models.json: HTTP ${response.status}`)
+      return response.json()
+    }),
+    fetch(`${DATA}/view.json`, { cache: 'no-cache' })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null),
+  ])
+
+  state.fetchedAt = data.fetchedAt
+  state.all = data.models.map(lib.materialize)
+  const counts = lib.coverage(state.all)
+  state.fields = lib.FIELDS.map((field) => ({
+    name: field.name,
+    label: field.label,
+    format: field.format,
+    aliases: field.aliases,
+    derived: field.derived ?? false,
+    coverage: counts[field.name] ?? 0,
+  }))
+
+  applyView(loadStaticView(publishedView))
+  renderColumnPicker()
+  await load()
+}
+
+/** A view saved in this browser wins over the one published with the build. */
+function loadStaticView(published) {
+  let stored = null
+  try {
+    stored = JSON.parse(localStorage.getItem(VIEW_STORAGE_KEY) ?? 'null')
+  } catch {
+    // Unreadable storage behaves like no saved view.
+  }
+  return lib.normalizeView(stored ?? published ?? lib.DEFAULT_VIEW)
 }
 
 function showError(message, pos) {
@@ -587,6 +690,7 @@ $('filter').addEventListener('input', (event) => {
 })
 
 $('refresh').addEventListener('click', async (event) => {
+  if (STATIC) return
   const button = event.currentTarget
   button.disabled = true
   button.textContent = 'Refreshing…'
@@ -623,12 +727,17 @@ async function putView(candidate) {
 }
 
 $('export').addEventListener('click', async () => {
-  // Make sure the file matches what is on screen, not the last debounce.
-  unsaved = true
-  await saveView()
+  let view
+  if (STATIC) {
+    view = lib.normalizeView(currentView())
+  } else {
+    // Make sure the file matches what is on screen, not the last debounce.
+    unsaved = true
+    await saveView()
+    view = await (await fetch('/api/view')).json()
+  }
 
-  const blob = new Blob([JSON.stringify(await (await fetch('/api/view')).json(), null, 2) + '\n'],
-    { type: 'application/json' })
+  const blob = new Blob([JSON.stringify(view, null, 2) + '\n'], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   el('a', { href: url, download: 'llm-leaderboard-view.json' }).click()
   URL.revokeObjectURL(url)
@@ -643,7 +752,11 @@ $('importFile').addEventListener('change', async (event) => {
   if (!file) return
 
   try {
-    const stored = await putView(JSON.parse(await file.text()))
+    const parsed = JSON.parse(await file.text())
+    const stored = STATIC ? lib.normalizeView(parsed) : await putView(parsed)
+    if (STATIC) {
+      try { localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(stored)) } catch { /* still applies this session */ }
+    }
     applyView(stored)
     renderColumnPicker()
     await load()
@@ -654,15 +767,26 @@ $('importFile').addEventListener('change', async (event) => {
   }
 })
 
-const boot = await Promise.all([
-  fetch('/api/view').then((r) => r.json()),
-  fetch('/api/fields').then((r) => r.json()),
-])
-applyView(boot[0])
-state.fields = boot[1].fields
-renderColumnPicker()
-await loadAll()
-await load()
+if (STATIC) {
+  // Scraping is a server operation; the Pages build is refreshed by the deploy workflow.
+  $('refresh').hidden = true
+  try {
+    await bootStatic()
+  } catch (error) {
+    $('meta').textContent = 'unavailable'
+    showError(`Could not load leaderboard data: ${error instanceof Error ? error.message : String(error)}`, null)
+  }
+} else {
+  const boot = await Promise.all([
+    fetch('/api/view').then((r) => r.json()),
+    fetch('/api/fields').then((r) => r.json()),
+  ])
+  applyView(boot[0])
+  state.fields = boot[1].fields
+  renderColumnPicker()
+  await loadAll()
+  await load()
+}
 </script>
 </body>
 </html>
