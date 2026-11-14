@@ -66,8 +66,9 @@ them as free, and `price != 0` excludes them rather than sweeping them in. Only
 
 ### Fields
 
-`llm-leaderboard fields` lists everything — 54 fields, including derived ones and aliases.
-Every published field is filterable under its own name, plus short aliases:
+`llm-leaderboard fields` lists everything — 63 fields, including derived ones and aliases.
+Every published field is filterable under its own name or the name Artificial Analysis
+uses in its payload, plus short aliases:
 
 | Alias | Field |
 |---|---|
@@ -76,7 +77,8 @@ Every published field is filterable under its own name, plus short aliases:
 | `inputPrice`, `outputPrice` | raw per-1M prices |
 | `creator`, `vendor` | `modelCreatorName` |
 | `speed`, `tps` | median output tokens/sec |
-| `ttft`, `latency` | time to first token / end-to-end |
+| `ttft` | median time to first token |
+| `ttfa` | median time to first answer token |
 | `context`, `openWeights`, `reasoning`, `released`, `age` | — |
 
 ## The saved view
@@ -125,7 +127,7 @@ A few deliberate choices:
   the whole leaderboard stays visible in grey while the filter's matches are highlighted, so
   you can see what a filter *excluded*. The orange line is the best-value frontier: the
   cheapest model to reach each intelligence level.
-- **Sortable table** with a column picker over all 54 fields
+- **Sortable table** with a column picker over all 63 fields
 - **Filter, sort and columns persist** across sessions — see [the saved view](#the-saved-view)
   — with Export/Import for moving a view between machines
 - **Defaults** restores the built-in filter, sort and columns, replacing a saved view

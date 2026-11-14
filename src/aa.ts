@@ -44,6 +44,12 @@ const MIN_RECORD_FIELDS = 10
 // page without touching the network, and they key off structure (the record with
 // the most fields) rather than a hardcoded byte offset, so a page rebuild that
 // shuffles chunk boundaries does not break them.
+//
+// Since late 2026 the payload no longer publishes the flat record shape snapshots
+// use: the model's slug is nested under `release`, benchmarks live in a `scores`
+// map keyed by benchmark slug, and the performance block is renamed. The parser
+// translates both that shape and the older flat one back into the stable
+// `ModelRecord` shape, so saved views and filter expressions keep working.
 // ---------------------------------------------------------------------------
 
 const FLIGHT_PUSH = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)/g
@@ -118,7 +124,108 @@ function fieldCount(rows: unknown[]): number {
 
 /** A leaderboard row rather than a release mapping: it has a slug and real content. */
 function isModelRow(row: Record<string, unknown>): boolean {
-  return typeof row.slug === 'string' && Object.keys(row).length >= MIN_RECORD_FIELDS
+  const slug = typeof row.slug === 'string'
+    ? row.slug
+    // Current payload: the slug lives on the nested `release` object.
+    : isObject(row.release) && typeof row.release.slug === 'string' ? row.release.slug : undefined
+  return slug !== undefined && Object.keys(row).length >= MIN_RECORD_FIELDS
+}
+
+// ---------------------------------------------------------------------------
+// Payload -> ModelRecord translation
+//
+// The current page publishes records as
+//
+//   { release: { slug }, name, ..., scores: { 'gpqa-diamond': 0.87 }, outputSpeed }
+//
+// while snapshots have always used flat names (`slug`, `gpqa`, `medianOutputTokensPerSecond`).
+// Translating rather than renaming keeps every saved filter and view valid; the payload's
+// own names are registered as aliases in `fields.ts`, so both spellings work.
+// ---------------------------------------------------------------------------
+
+/** Benchmark slugs in `scores`, mapped to the flat snapshot field names. */
+const SCORE_FIELDS: Readonly<Record<string, string>> = {
+  'humanitys-last-exam': 'hle',
+  'hle-diamond': 'hleDiamond',
+  'gpqa-diamond': 'gpqa',
+  'critpt': 'critpt',
+  'critpt-v2-hard': 'critptV2Hard',
+  'artificial-analysis-long-context-reasoning': 'lcr',
+  'mlcr-aa': 'multilingualLcr',
+  'ifbench': 'ifbench',
+  'tau2-bench': 'tau2',
+  'tau3-banking': 'tauBanking',
+  'terminalbench-hard': 'terminalbenchHard',
+  'terminalbench-2-1': 'terminalBench21',
+  'terminalbench-4-0': 'terminalBench40',
+  'terminal-bench-science': 'terminalBenchScience',
+  'livecodebench': 'livecodebench',
+  'aime-2025': 'aime2025',
+  'gdpval-aa-normalized': 'gdpvalNormalized',
+  'gdp-pdf': 'gdpPdf',
+  'mmmu-pro': 'mmmuPro',
+  'scicode': 'scicode',
+  'aa-briefcase': 'aaBriefcase',
+  'automationbench-aa': 'automationBench',
+  'omniscience-accuracy': 'omniscienceAccuracy',
+  'omniscience-non-hallucination': 'omniscienceNonHallucination',
+  'frontiercode': 'frontierCode',
+  'frontiercode-2-0': 'frontierCode20',
+  'aa-analyst-agent': 'analystAgent',
+  'enterprise-ops-gym-aa': 'enterpriseOpsGym',
+  'itbench-aa': 'itbenchSre',
+  'apex-agents-aa': 'apexAgents',
+  'harvey-lab-aa': 'harveyLab',
+  'code2video-aa': 'code2Video',
+  'aa-3d': 'aa3d',
+  'mka': 'mka',
+  'vials-aa': 'vials',
+  'healthbench': 'healthbench',
+  'healthbench-professional': 'healthbenchProfessional',
+}
+
+/** Performance fields renamed by the new payload; the snapshot names stay put. */
+const RENAMED_FIELDS: Readonly<Record<string, string>> = {
+  outputSpeed: 'medianOutputTokensPerSecond',
+  timeToFirstToken: 'medianTimeToFirstTokenSeconds',
+  timeToFirstAnswerToken: 'medianTimeToFirstAnswerTokenSeconds',
+}
+
+/** Top-level fields the new payload publishes under the same name. */
+const COPIED_FIELDS = [
+  'name', 'shortName', 'deprecated', 'isReasoning', 'isOpenWeights', 'paramClass', 'priceClass',
+  'modelCreatorName', 'modelCreatorColor', 'modelCreatorLogo', 'contextWindowTokens',
+  'intelligenceIndex', 'omniscience', 'price1mInputTokens', 'price1mOutputTokens',
+  'cacheHitPrice', 'cacheWritePrice', 'intelligenceIndexCostPerTask', 'intelligenceIndexTimePerTask',
+] as const
+
+/**
+ * Translate one payload record into a snapshot record.
+ *
+ * Records cached from the older flat payload are returned as they are. The new shape
+ * is flattened by copy, leaving absent fields absent rather than writing `undefined`,
+ * which preserves the null-vs-missing distinction the filters rely on.
+ */
+function normalizeRecord(row: Record<string, unknown>): ModelRecord {
+  if (typeof row.slug === 'string') return { ...row } as unknown as ModelRecord
+
+  const release = isObject(row.release) ? row.release : undefined
+  const slug = release && typeof release.slug === 'string' ? release.slug : undefined
+  if (!slug) throw new Error('model record has no slug — the page format probably changed')
+
+  const out: Record<string, unknown> = { slug }
+  for (const key of COPIED_FIELDS) {
+    if (key in row) out[key] = row[key]
+  }
+  for (const [from, to] of Object.entries(RENAMED_FIELDS)) {
+    if (from in row) out[to] = row[from]
+  }
+  if (isObject(row.scores)) {
+    for (const [from, to] of Object.entries(SCORE_FIELDS)) {
+      if (from in row.scores) out[to] = row.scores[from]
+    }
+  }
+  return out as unknown as ModelRecord
 }
 
 /** The encrypted dataset the page's client fetches to show models outside the default view. */
@@ -164,8 +271,9 @@ export function parsePage(html: string): LeaderboardPage {
   const [best] = widestArrayOf(candidates, isModelRow)
   if (!best) throw new Error('no model records found in page payload — the page format probably changed')
 
+  const models = (best as Record<string, unknown>[]).map(normalizeRecord)
   return {
-    models: withReleaseDates(best as ModelRecord[], releaseDates),
+    models: withReleaseDates(models, releaseDates),
     releaseDates,
     manifest: parseManifest(payload),
   }
@@ -215,24 +323,32 @@ export async function decodeManifest(encrypted: ArrayBuffer, keyHex: string): Pr
   return JSON.parse(json)
 }
 
-/** Map leaderboard slug -> ISO release date, via the `releaseSlug` indirection. */
+/**
+ * Map leaderboard slug -> ISO release date.
+ *
+ * The current page publishes a top-level `releases` array whose slugs the records
+ * reference through `release.slug`, so the join is direct. The previous payload nested
+ * the same release records inside `modelsAndReleases`, but went through a separate
+ * `releaseSlug` mapping; that indirection is still handled so an old saved page parses.
+ */
 function parseReleaseDates(payload: string): Map<string, string> {
   const dates = new Map<string, string>()
-  const container = findAfter<Record<string, unknown>>(payload, '"modelsAndReleases":', '{')
-    .sort((a, b) => Object.keys(b).length - Object.keys(a).length)[0]
-  if (!container) return dates
-  const releases = Array.isArray(container.releases) ? container.releases : []
-  const models = Array.isArray(container.models) ? container.models : []
 
-  const byReleaseSlug = new Map<string, string>()
-  for (const release of releases) {
-    if (isObject(release) && typeof release.slug === 'string' && typeof release.releaseDate === 'string') {
-      byReleaseSlug.set(release.slug, release.releaseDate)
+  for (const array of findAfter<unknown[]>(payload, '"releases":[', '[')) {
+    for (const release of array) {
+      if (isObject(release) && typeof release.slug === 'string' && typeof release.releaseDate === 'string') {
+        dates.set(release.slug, release.releaseDate)
+      }
     }
   }
+
+  // Legacy: model slug -> releaseSlug -> date.
+  const container = findAfter<Record<string, unknown>>(payload, '"modelsAndReleases":', '{')
+    .sort((a, b) => Object.keys(b).length - Object.keys(a).length)[0]
+  const models = container && Array.isArray(container.models) ? container.models : []
   for (const model of models) {
     if (!isObject(model) || typeof model.slug !== 'string' || typeof model.releaseSlug !== 'string') continue
-    const date = byReleaseSlug.get(model.releaseSlug)
+    const date = dates.get(model.releaseSlug)
     if (date) dates.set(model.slug, date)
   }
   return dates
@@ -339,7 +455,7 @@ export class ArtificialAnalysis extends Service {
     if (!data.every((row) => isObject(row) && isModelRow(row))) {
       throw new Error('manifest dataset does not contain model records')
     }
-    return data as unknown as ModelRecord[]
+    return (data as Record<string, unknown>[]).map(normalizeRecord)
   }
 
   /** Load from cache if nothing is in memory yet. Used when serving without a refresh. */

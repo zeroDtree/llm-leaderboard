@@ -3,16 +3,38 @@ import assert from 'node:assert/strict'
 import { decodeManifest, flightPayload, parseLeaderboard, parsePage, scanValue, type Manifest } from './aa.js'
 
 /**
- * Build a page that mimics the shape of the real leaderboard: React flight chunks
- * carrying a wide model array, plus the narrower `modelsAndReleases` structure
- * that shares the `models` key.
+ * Build a page that mimics the current payload: a wide record array under
+ * `initialModels` (slug nested under `release`, benchmarks under `scores`) and a
+ * top-level `releases` array carrying the dates.
  */
 function fakePage(
   models: unknown[],
   releases: unknown[] = [],
+  key = 'initialModels',
+  manifest?: Manifest,
+): string {
+  const payload = [
+    `21:["$","div",null,{"className":"container","children":[["$","$L22",null,{"${key}":`,
+    JSON.stringify(models),
+    '}]]}',
+    'd:{"releases":',
+    JSON.stringify(releases),
+    '}',
+    manifest ? `e:{"manifest":${JSON.stringify(manifest)}}` : '',
+  ].join('')
+  // The real page streams this as a JSON-escaped string argument.
+  return `<html><body><script>self.__next_f.push([1,${JSON.stringify(payload)}])</script></body></html>`
+}
+
+/**
+ * Build a page in the older shape: flat records under `models`, release metadata
+ * nested in `modelsAndReleases`, joined through the `releaseSlug` indirection.
+ */
+function legacyPage(
+  models: unknown[],
+  releases: unknown[] = [],
   mappings: unknown[] = [],
   key = 'models',
-  manifest?: Manifest,
 ): string {
   const payload = [
     `21:["$","div",null,{"className":"container","children":[["$","$L22",null,{"${key}":`,
@@ -21,17 +43,44 @@ function fakePage(
     'd:{"modelsAndReleases":',
     JSON.stringify({ releases, models: mappings }),
     '}',
-    manifest ? `e:{"manifest":${JSON.stringify(manifest)}}` : '',
   ].join('')
-  // The real page streams this as a JSON-escaped string argument.
   return `<html><body><script>self.__next_f.push([1,${JSON.stringify(payload)}])</script></body></html>`
 }
 
-const wide = [
+/** A record in the current payload shape, with every field the parser reads. */
+function published(slug: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    release: { slug },
+    name: `Model ${slug}`,
+    shortName: slug,
+    deprecated: false,
+    isReasoning: false,
+    isOpenWeights: true,
+    paramClass: 'large',
+    priceClass: 'medium',
+    modelCreatorName: 'Acme',
+    modelCreatorColor: '#000',
+    modelCreatorLogo: '/logo.svg',
+    contextWindowTokens: 1000,
+    intelligenceIndex: 42.5,
+    omniscience: null,
+    scores: { 'humanitys-last-exam': 0.9, 'gpqa-diamond': 0.8, 'terminalbench-hard': 0.4 },
+    price1mInputTokens: 1,
+    price1mOutputTokens: 2,
+    cacheHitPrice: null,
+    cacheWritePrice: null,
+    intelligenceIndexCostPerTask: 0.5,
+    intelligenceIndexTimePerTask: 60,
+    ...overrides,
+  }
+}
+
+/** A record in the older flat shape. */
+const legacyWide = [
   { slug: 'model-a', name: 'Model A', deprecated: false, isReasoning: false, modelCreatorName: 'A', intelligenceIndex: 42.5, contextWindowTokens: 1000, isOpenWeights: true, price1mInputTokens: 1, price1mOutputTokens: 2 },
   { slug: 'model-b', name: 'Model B', deprecated: false, isReasoning: false, modelCreatorName: 'B', intelligenceIndex: 11, contextWindowTokens: 2000, isOpenWeights: false, price1mInputTokens: null, price1mOutputTokens: null },
 ]
-// Seven fields shorter than `wide` — the parser must not pick this one.
+// Seven fields shorter than `legacyWide` — the parser must not pick this one.
 const narrow = [{ slug: 'model-a', name: 'Model A', releaseSlug: 'rel-a' }]
 
 test('decodes concatenated flight chunks', () => {
@@ -44,29 +93,56 @@ test('scanValue is string-aware', () => {
   assert.equal(scanValue(source, 0), source.length)
 })
 
+test('flattens the current payload into the snapshot record shape', () => {
+  const [model] = parseLeaderboard(fakePage([published('model-a')]))
+  assert.equal(model!.slug, 'model-a')
+  assert.equal(model!.name, 'Model model-a')
+  // `scores` entries are renamed to the fields the app has always exposed.
+  assert.equal(model!.hle, 0.9)
+  assert.equal(model!.gpqa, 0.8)
+  assert.equal(model!.terminalbenchHard, 0.4)
+  assert.equal(model!.intelligenceIndexTimePerTask, 60)
+  assert.ok(!('scores' in model!))
+  assert.ok(!('release' in model!))
+})
+
+test('renames the current payload performance block', () => {
+  const [model] = parseLeaderboard(fakePage([
+    published('model-a', { outputSpeed: 120, timeToFirstToken: 0.3, timeToFirstAnswerToken: 0.5 }),
+  ]))
+  assert.equal(model!.medianOutputTokensPerSecond, 120)
+  assert.equal(model!.medianTimeToFirstTokenSeconds, 0.3)
+  assert.equal(model!.medianTimeToFirstAnswerTokenSeconds, 0.5)
+})
+
+test('preserves absent performance keys as absent rather than null', () => {
+  const [model] = parseLeaderboard(fakePage([published('model-a')]))
+  assert.equal('medianOutputTokensPerSecond' in model!, false)
+})
+
 test('picks the widest models array, not the release mapping that shares the key', () => {
-  const models = parseLeaderboard(fakePage(wide, [], narrow))
+  const models = parseLeaderboard(legacyPage(legacyWide, [], narrow))
   assert.equal(models.length, 2)
   assert.equal(models[0]!.slug, 'model-a')
   assert.ok(!('releaseSlug' in models[0]!))
 })
 
 test('reads initialModels when the page no longer inlines every record under models', () => {
-  const models = parseLeaderboard(fakePage(wide, [], narrow, 'initialModels'))
+  const models = parseLeaderboard(fakePage([published('model-a'), published('model-b')]))
   assert.equal(models.length, 2)
   assert.equal(models[0]!.intelligenceIndex, 42.5)
 })
 
 test('rejects a page that only carries the narrow release mapping', () => {
   // Regression: this used to be cached as 700+ records with every statistic missing.
-  assert.throws(() => parseLeaderboard(fakePage(narrow, [], narrow)), /no model records found/)
+  assert.throws(() => parseLeaderboard(legacyPage(narrow, [], narrow)), /no model records found/)
 })
 
 test('extracts the encrypted dataset manifest from the page', () => {
   const manifest = { path: '/data/abc.txt', key: 'aabbcc' }
-  const page = parsePage(fakePage(wide, [], narrow, 'initialModels', manifest))
+  const page = parsePage(fakePage([published('model-a')], [], 'initialModels', manifest))
   assert.deepEqual(page.manifest, manifest)
-  assert.equal(page.models.length, 2)
+  assert.equal(page.models.length, 1)
 })
 
 test('decrypts and decompresses a manifest dataset', async () => {
@@ -85,19 +161,24 @@ test('decrypts and decompresses a manifest dataset', async () => {
   assert.deepEqual(await decodeManifest(encrypted, keyHex), rows)
 })
 
-test('joins release dates through the releaseSlug indirection', () => {
-  const releases = [{ slug: 'rel-a', name: 'A', releaseDate: '2025-03-04', creator: { slug: 'x', name: 'X' } }]
-  const mappings = [{ slug: 'model-a', name: 'Model A', releaseSlug: 'rel-a' }, { slug: 'model-b', name: 'Model B', releaseSlug: 'rel-missing' }]
-  const models = parseLeaderboard(fakePage(wide, releases, mappings))
+test('joins release dates through the current release.slug reference', () => {
+  const releases = [
+    { slug: 'model-a', name: 'A', releaseDate: '2025-03-04', modelNames: [], creator: { slug: 'x', name: 'X' } },
+  ]
+  const models = parseLeaderboard(fakePage([published('model-a'), published('model-b')], releases))
   assert.equal(models[0]!.releaseDate, '2025-03-04')
   // A model with no matching release simply has no date, rather than being dropped.
   assert.equal(models[1]!.releaseDate, undefined)
   assert.equal(models.length, 2)
 })
 
-test('preserves absent performance keys as absent rather than null', () => {
-  const models = parseLeaderboard(fakePage(wide, [], narrow))
-  assert.equal('medianOutputTokensPerSecond' in models[0]!, false)
+test('joins release dates through the legacy releaseSlug indirection', () => {
+  const releases = [{ slug: 'rel-a', name: 'A', releaseDate: '2025-03-04', creator: { slug: 'x', name: 'X' } }]
+  const mappings = [{ slug: 'model-a', name: 'Model A', releaseSlug: 'rel-a' }, { slug: 'model-b', name: 'Model B', releaseSlug: 'rel-missing' }]
+  const models = parseLeaderboard(legacyPage(legacyWide, releases, mappings))
+  assert.equal(models[0]!.releaseDate, '2025-03-04')
+  assert.equal(models[1]!.releaseDate, undefined)
+  assert.equal(models.length, 2)
 })
 
 test('fails loudly when the page no longer contains model records', () => {
@@ -105,6 +186,7 @@ test('fails loudly when the page no longer contains model records', () => {
 })
 
 test('survives a page with no release metadata', () => {
-  const models = parseLeaderboard(fakePage(wide))
-  assert.equal(models.length, 2)
+  const models = parseLeaderboard(fakePage([published('model-a')]))
+  assert.equal(models.length, 1)
+  assert.equal(models[0]!.releaseDate, undefined)
 })

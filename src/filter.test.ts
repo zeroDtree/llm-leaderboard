@@ -9,7 +9,7 @@ const accessors = fieldAccessors()
 /** Hand-built records with round numbers, so every expectation is exact. */
 const base = {
   shortName: '', modelCreatorColor: '#000', modelCreatorLogo: '', contextWindowTokens: 1000,
-  intelligenceIndexIsEstimated: false, releaseDate: '2025-01-01',
+  releaseDate: '2025-01-01',
 }
 
 const MODELS = [

@@ -1,8 +1,11 @@
 /**
- * The record shape published by Artificial Analysis.
+ * The stable snapshot record shape.
  *
- * Field names are kept exactly as they appear in the site's own payload so that the
- * scraper stays a thin translation layer and a schema change is easy to diff.
+ * Artificial Analysis publishes a nested payload (the slug under `release`, benchmarks
+ * under `scores`, `outputSpeed` for throughput); {@link ../aa.js} flattens it into these
+ * names on the way in. Snapshots have used these names since the first version, so a
+ * payload reshuffle does not invalidate saved views or filter expressions — the
+ * payload's own names are registered as aliases in `fields.ts` instead.
  *
  * Two properties of this data drive most of the code that follows:
  *
@@ -26,13 +29,12 @@ export interface ModelRecord {
   isReasoning: boolean
   isOpenWeights: boolean
 
-  // -- joined from the page's `modelsAndReleases` payload -------------------
+  // -- joined from the page's release metadata ------------------------------
   /** ISO `YYYY-MM-DD`. Present on every record after {@link ../aa.js} joins it in. */
   releaseDate?: string
 
   // -- capability ----------------------------------------------------------
   intelligenceIndex?: number | null
-  intelligenceIndexIsEstimated: boolean
   contextWindowTokens: number
   paramClass?: string | null
 
@@ -43,66 +45,80 @@ export interface ModelRecord {
   cacheHitPrice?: number | null
   cacheWritePrice?: number | null
   intelligenceIndexCostPerTask?: number | null
+  /** Seconds per task, published alongside the cost. */
+  intelligenceIndexTimePerTask?: number | null
 
   // -- performance (omitted entirely on un-benchmarked models) -------------
   medianOutputTokensPerSecond?: number
-  percentile05OutputTokensPerSecond?: number
-  quartile25OutputTokensPerSecond?: number
-  quartile75OutputTokensPerSecond?: number
-  percentile95OutputTokensPerSecond?: number
   medianTimeToFirstTokenSeconds?: number
   medianTimeToFirstAnswerTokenSeconds?: number
-  percentile05TimeToFirstTokenSeconds?: number
-  quartile25TimeToFirstTokenSeconds?: number
-  quartile75TimeToFirstTokenSeconds?: number
-  percentile95TimeToFirstTokenSeconds?: number
-  medianEndToEndResponseTimeSeconds?: number
-  medianReasoningTimeSeconds?: number | null
 
   // -- benchmarks ----------------------------------------------------------
+  // AA's headline index and its components.
   omniscience?: number | null
   omniscienceAccuracy?: number | null
   omniscienceNonHallucination?: number | null
+  // Agentic and knowledge work.
   gdpvalNormalized?: number | null
+  gdpPdf?: number | null
   analystAgent?: number | null
+  // Terminal / coding.
   terminalbenchHard?: number | null
   terminalBench21?: number | null
   terminalBench40?: number | null
+  terminalBenchScience?: number | null
   tau2?: number | null
   tauBanking?: number | null
   lcr?: number | null
+  multilingualLcr?: number | null
+  livecodebench?: number | null
+  frontierCode?: number | null
+  frontierCode20?: number | null
+  // Reasoning and general knowledge.
   hle?: number | null
+  hleDiamond?: number | null
   gpqa?: number | null
   scicode?: number | null
   ifbench?: number | null
   critpt?: number | null
+  critptV2Hard?: number | null
+  aime2025?: number | null
+  aaBriefcase?: number | null
+  automationBench?: number | null
+  // Domain-specific.
   apexAgents?: number | null
   itbenchSre?: number | null
   mmmuPro?: number | null
+  enterpriseOpsGym?: number | null
+  harveyLab?: number | null
+  code2Video?: number | null
+  aa3d?: number | null
+  mka?: number | null
+  vials?: number | null
+  healthbench?: number | null
+  healthbenchProfessional?: number | null
 }
 
 /**
- * The keys Artificial Analysis emits, in payload order.
+ * The keys a snapshot record can carry, in display order.
  *
- * This is the census taken over all 703 records. It exists so the field registry can
+ * This is the census taken over the full dataset. It exists so the field registry can
  * expose every published field for filtering without the two lists drifting apart —
  * {@link ../fields.js} builds its accessors from this array.
  */
 export const RAW_KEYS = [
   'slug', 'name', 'shortName', 'deprecated', 'isReasoning', 'isOpenWeights', 'paramClass',
   'priceClass', 'modelCreatorName', 'modelCreatorColor', 'modelCreatorLogo', 'contextWindowTokens',
-  'intelligenceIndex', 'intelligenceIndexIsEstimated', 'omniscience', 'omniscienceAccuracy',
-  'omniscienceNonHallucination', 'gdpvalNormalized', 'analystAgent', 'terminalbenchHard',
-  'terminalBench21', 'terminalBench40', 'tau2', 'tauBanking', 'lcr', 'hle', 'gpqa', 'scicode',
-  'ifbench', 'critpt', 'apexAgents', 'itbenchSre', 'mmmuPro', 'price1mInputTokens',
+  'intelligenceIndex', 'omniscience', 'omniscienceAccuracy', 'omniscienceNonHallucination',
+  'gdpvalNormalized', 'gdpPdf', 'analystAgent', 'terminalbenchHard', 'terminalBench21',
+  'terminalBench40', 'terminalBenchScience', 'tau2', 'tauBanking', 'lcr', 'multilingualLcr',
+  'livecodebench', 'frontierCode', 'frontierCode20', 'hle', 'hleDiamond', 'gpqa', 'scicode',
+  'ifbench', 'critpt', 'critptV2Hard', 'aime2025', 'aaBriefcase', 'automationBench',
+  'apexAgents', 'itbenchSre', 'mmmuPro', 'enterpriseOpsGym', 'harveyLab', 'code2Video', 'aa3d',
+  'mka', 'vials', 'healthbench', 'healthbenchProfessional', 'price1mInputTokens',
   'price1mOutputTokens', 'cacheHitPrice', 'cacheWritePrice', 'medianOutputTokensPerSecond',
-  'percentile05OutputTokensPerSecond', 'quartile25OutputTokensPerSecond',
-  'quartile75OutputTokensPerSecond', 'percentile95OutputTokensPerSecond',
   'medianTimeToFirstTokenSeconds', 'medianTimeToFirstAnswerTokenSeconds',
-  'percentile05TimeToFirstTokenSeconds', 'quartile25TimeToFirstTokenSeconds',
-  'quartile75TimeToFirstTokenSeconds', 'percentile95TimeToFirstTokenSeconds',
-  'medianEndToEndResponseTimeSeconds', 'medianReasoningTimeSeconds',
-  'intelligenceIndexCostPerTask',
+  'intelligenceIndexCostPerTask', 'intelligenceIndexTimePerTask',
 ] as const
 
 export type RawKey = typeof RAW_KEYS[number]
